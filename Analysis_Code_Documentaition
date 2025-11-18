@@ -1,0 +1,167 @@
+# -----------------------------
+# Step 1: Import Libraries
+# -----------------------------
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import re
+import string
+import nltk
+from nltk.corpus import stopwords
+from wordcloud import WordCloud
+from collections import Counter
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.svm import LinearSVC
+from sklearn.ensemble import RandomForestClassifier
+import xgboost as xgb
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
+import joblib
+import time
+
+# Display options
+pd.set_option('display.max_colwidth', 300)
+pd.set_option('display.max_rows', 100)
+
+# -----------------------------
+# Step 2: Load Data
+# -----------------------------
+train_df = pd.read_csv("test.csv")
+test_df = pd.read_csv("train.csv")
+
+# Fix column names
+train_df.columns = ['score', 'summary', 'text']
+test_df.columns = ['score', 'summary', 'text']
+
+# -----------------------------
+# Step 3: Map Score to Sentiment
+# -----------------------------
+train_df['sentiment'] = train_df['score'].map({1:'negative', 2:'positive'})
+test_df['sentiment'] = test_df['score'].map({1:'negative', 2:'positive'})
+
+# -----------------------------
+# Step 4: Clean & Preprocess Text
+# -----------------------------
+def clean_text(text):
+    text = str(text).lower()
+    text = re.sub(r'\n', ' ', text)
+    text = re.sub(r'\r', '', text)
+    text = re.sub(r'http\S+', '', text)
+    text = re.sub(r'[^a-zA-Z\s]', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+train_df['clean_text'] = train_df['text'].apply(clean_text)
+test_df['clean_text'] = test_df['text'].apply(clean_text)
+
+# Remove stopwords
+nltk.download('stopwords')
+stop_words = set(stopwords.words('english'))
+
+def remove_stopwords(text):
+    return " ".join([word for word in text.split() if word not in stop_words])
+
+train_df['clean_text'] = train_df['clean_text'].apply(remove_stopwords)
+test_df['clean_text'] = test_df['clean_text'].apply(remove_stopwords)
+
+# -----------------------------
+# Step 4.1: Remove Custom Stopwords
+# -----------------------------
+custom_stopwords = ['one', 'would', 'get', 'like', 'also', 'us', 'book', 'time', 'even', 'movie', 'good', 'read']
+stop_words_extended = stop_words.union(custom_stopwords)
+
+def remove_custom_stopwords(text):
+    return " ".join([word for word in text.split() if word not in stop_words_extended])
+
+train_df['clean_text_final'] = train_df['clean_text'].apply(remove_custom_stopwords)
+test_df['clean_text_final'] = test_df['clean_text'].apply(remove_custom_stopwords)
+
+# -----------------------------
+# Step 5: Feature Engineering & Vectorization
+# -----------------------------
+train_subset = train_df.sample(n=100000, random_state=42)
+test_subset = test_df.sample(n=100000, random_state=42)
+
+tfidf = TfidfVectorizer(max_features=20000)
+X_train_sub = tfidf.fit_transform(train_subset['clean_text_final'])
+X_test_sub = tfidf.transform(test_subset['clean_text_final'])
+
+y_train_sub = train_subset['sentiment'].map({'negative':0, 'positive':1}).values
+y_test_sub = test_subset['sentiment'].map({'negative':0, 'positive':1}).values
+
+# -----------------------------
+# Step 6: Train Baseline Models
+# -----------------------------
+def evaluate_model(model, X_train, y_train, X_test, y_test):
+    start_time = time.time()
+    model.fit(X_train, y_train)
+    train_time = time.time() - start_time
+    start_time = time.time()
+    y_pred = model.predict(X_test)
+    pred_time = time.time() - start_time
+    metrics = {
+        "Accuracy": accuracy_score(y_test, y_pred),
+        "Precision": precision_score(y_test, y_pred),
+        "Recall": recall_score(y_test, y_pred),
+        "F1-Score": f1_score(y_test, y_pred),
+        "Train Time (s)": train_time,
+        "Prediction Time (s)": pred_time
+    }
+    return y_pred, metrics
+
+models = {
+    "Logistic Regression": LogisticRegression(max_iter=200),
+    "Naive Bayes": MultinomialNB(),
+    "SVM": LinearSVC(),
+    "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42),
+    "XGBoost": xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
+}
+
+results = {}
+for name, model in models.items():
+    print(f"Training {name} ...")
+    y_pred, metrics = evaluate_model(model, X_train_sub, y_train_sub, X_test_sub, y_test_sub)
+    results[name] = metrics
+
+results_df = pd.DataFrame(results).T.sort_values(by="Accuracy", ascending=False)
+print("\nAll Model Metrics & Time Comparison on Subset:")
+print(results_df)
+
+# -----------------------------
+# Step 7: Save Best Model
+# -----------------------------
+best_model = LogisticRegression(max_iter=200)
+best_model.fit(X_train_sub, y_train_sub)
+
+joblib.dump(best_model, "logistic_regression_model.pkl")
+joblib.dump(tfidf, "tfidf_vectorizer.pkl")
+
+# -----------------------------
+# Step 8: Load Model & Predict Unseen Data
+# -----------------------------
+model = joblib.load("logistic_regression_model.pkl")
+
+
+data = {
+    "review": [
+        "I love this product, it works great!",
+        "Terrible quality, broke after one use.",
+        "Highly recommend, I’m very satisfied.",
+        "Worst purchase I’ve made online."
+    ],
+    "label": [1, 0, 1, 0]
+}
+df_unseen = pd.DataFrame(data)
+X_unseen = vectorizer.transform(df_unseen['review'])
+y_true = df_unseen['label']
+
+y_pred = model.predict(X_unseen)
+
+print("Model Performance on Unseen Dataset:")
+print(f"Accuracy:  {accuracy_score(y_true, y_pred):.2f}")
+print(f"Precision: {precision_score(y_true, y_pred):.2f}")
+print(f"Recall:    {recall_score(y_true, y_pred):.2f}")
+print(f"F1-Score:  {f1_score(y_true, y_pred):.2f}\n")
+print(classification_report(y_true, y_pred, target_names=["Negative", "Positive"]))
